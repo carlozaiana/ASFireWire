@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "../DuplexAudioFormat.hpp"
 #include "../SourceFrameClock.hpp"
 #include <array>
 #include <algorithm>
@@ -14,13 +15,13 @@ struct DuplexSpeakerContent {
     static void tones(uint64_t first,std::span<float> out) noexcept {
         std::fill(out.begin(),out.end(),0.f);
         constexpr double tau=6.283185307179586476925286766559;
-        for(size_t f=0;f<out.size()/6;++f) {
+        for(size_t f=0;f<out.size()/Pro40Audio::duplexOutputChannels;++f) {
             const auto phase=(first+f)%(18*48000);
             if(phase<2*48000 || phase>=14*48000)continue;
             const auto offset=phase-2*48000,channel=offset/(2*48000),sample=offset%(2*48000);
             if(sample>=48000)continue;
             const double fade=sample<240?double(sample)/240:sample>=48000-240?double(48000-1-sample)/240:1.;
-            out[f*6+channel]=float((265271./8388608.)*fade*std::sin(tau*440*sample/48000));
+            out[f*Pro40Audio::duplexOutputChannels+channel]=float((265271./8388608.)*fade*std::sin(tau*440*sample/48000));
         }
     }
     void observe(uint64_t,std::span<const float>) noexcept {}
@@ -44,7 +45,7 @@ template<class Content=DuplexSpeakerContent> struct BasicDuplexHardwareRender {
     template<class Host,class Cancel,class Now,class Wait>
     bool run(Host &host,const Cancel &cancel,Now now,Wait wait) {
         AudioServerPlugInIOCycleInfo cycle{};
-        std::array<float,frames*8> input{};std::array<float,frames*6> output{};
+        std::array<float,frames*8> input{};std::array<float,frames*Pro40Audio::duplexOutputChannels> output{};
         firstInput=host.descriptor.inputFirst;firstOutput=host.descriptor.outputFirst+host.descriptor.primedOutputFrames;
         began=now();
         const auto fail=[&](unsigned why){failure=why;ended=now();return false;};

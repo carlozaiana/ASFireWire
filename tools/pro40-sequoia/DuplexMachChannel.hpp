@@ -16,7 +16,7 @@ public:
     enum class Kind:uint32_t {start=1,input=2,clock=3,output=4,activate=5,stop=6,stopped=7,credit=8};
     enum class Result {ok,idle,full,invalid,transport,closed};
     static constexpr mach_msg_id_t messageID=0x50344420;
-    static constexpr size_t prefix=32,maxPayload=AudioFeedPacketFor<8>::maxBytes;
+    static constexpr size_t prefix=32,maxPayload=std::max(AudioFeedPacketFor<duplexInputChannels>::maxBytes,AudioFeedPacketFor<duplexOutputChannels>::maxBytes);
     struct Packet {
         Kind kind=Kind::stop;size_t used=0;
         std::array<uint8_t,maxPayload> bytes{};

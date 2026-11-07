@@ -93,7 +93,11 @@ def execute(out):
                         assert report['cutover']==report['started_at'] and report['cutover']>0,report
                         assert report['prepared_frames']-report['cutover']==report['application_frames'],report
                         assert report['application_frames']>20000,report
+                        scheduling=report['delivery_scheduling']
+                        assert all(scheduling[k]==0 for k in ('set','after','final','restore','restored')),report
+                        assert scheduling['intervals']>0 and report['delivery']['batches']>0,report
                         if mode=='underrun':
+                            assert report['delivery']['underrun_requested']==8 and report['delivery']['underrun_available']<8,report
                             assert report['bridge_fault'] in (5,6) and report['startup_fault']==5 and report['playback_fault']==6,report
                         else:
                             assert not report['bridge_fault'] and not report['startup_fault'] and not report['playback_fault'],report

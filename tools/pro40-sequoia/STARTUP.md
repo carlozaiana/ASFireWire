@@ -50,3 +50,11 @@ Twelve subsequent live native restarts passed, but their first payloads all had
 valid labels. The malformed case was reproduced offline, not newly observed in
 that live run. This is a bounded fix for the known signature, not proof against
 every possible startup fault.
+
+
+## Later clock/lease startup fixes
+
+Initial-payload quarantine remains unchanged. The 19 October update separately
+addresses idle actual-44.1-kHz admission, earlier-Mac-boot lease provenance and
+login discovery timing. These do not relax subsequent packet validation or remove
+the cold-input warm-up workaround. See [UPDATES_2026-11-07.md](UPDATES_2026-11-07.md).

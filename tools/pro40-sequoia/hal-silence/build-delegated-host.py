@@ -62,7 +62,7 @@ def main():
     if built.get('endurance_trial'):
         assert args.hardware and not built.get('application_trial') and built['provisioning']['endurance_trial']
         profile.append('-DPRO40_ENDURANCE_TRIAL')
-    frameworks = ['-framework', 'CoreAudio', '-framework', 'CoreFoundation', '-framework', 'Security', '-lbsm']
+    frameworks = ['-framework', 'CoreAudio', '-framework', 'CoreFoundation', '-framework', 'AudioToolbox', '-framework', 'Security', '-lbsm']
     run('xcrun', 'clang++', *flags, *profile, '-bundle', SRC / 'HalSilenceDriver.cpp', *frameworks, '-o', executable)
     run('codesign', '--force', '--sign', '-', bundle)
     run('codesign', '--verify', '--strict', bundle)
@@ -70,7 +70,7 @@ def main():
     discovery = run(out / 'bundle-checks', bundle, '2816', '--delegated-hardware' if args.hardware else '--delegated', '8192')
     (out / 'discovery.txt').write_text(discovery.stdout + discovery.stderr)
     run('xcrun', 'clang++', *flags, *profile, SRC / 'HalDelegatedHostProbe.cpp',
-        '-framework', 'CoreAudio', '-framework', 'CoreFoundation', '-o', out / 'host-probe')
+        '-framework', 'CoreAudio', '-framework', 'CoreFoundation', '-framework', 'AudioToolbox', '-o', out / 'host-probe')
     imports = run('nm', '-u', executable).stdout
     assert not re.search(r'IOFireWire|IOService(Open|GetMatchingService)|AudioDevice(Start|CreateIOProcID)', imports), imports
     (out / 'imports.txt').write_text(imports)

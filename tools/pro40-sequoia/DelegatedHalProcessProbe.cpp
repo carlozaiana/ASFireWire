@@ -18,7 +18,7 @@ int main(int argc,char **argv) {
     if(!prepared.session){std::printf("{\"prepared\":false,\"cleanup\":%s}\n",prepared.cleanupOK?"true":"false");return 2;}
     auto &host=*prepared.session;const auto first=host.descriptor.inputFirst+37;
     uint64_t written=host.descriptor.outputFirst+host.descriptor.primedOutputFrames;
-    std::array<float,137*8> input{};std::array<float,137*6> output{};
+    std::array<float,137*8> input{};std::array<float,137*Pro40Audio::duplexOutputChannels> output{};
     auto due=std::chrono::steady_clock::now();unsigned blocks=0,error=0;
     for(;blocks<400;++blocks) {
         AudioServerPlugInIOCycleInfo cycle{};cycle.mInputTime.mSampleTime=double(first+blocks*137);cycle.mInputTime.mFlags=kAudioTimeStampSampleTimeValid;
@@ -26,12 +26,12 @@ int main(int argc,char **argv) {
         for(unsigned f=0;f<137;++f)for(unsigned c=0;c<8;++c)
             if(input[f*8+c]!=float(Fixture::sample(first+blocks*137+f,c))/8388608.f)error=2;
         if(error)break;
-        for(unsigned f=0;f<137;++f)for(unsigned c=0;c<6;++c)output[f*6+c]=float(100000*(c+1))/8388608.f;
+        for(unsigned f=0;f<137;++f)for(unsigned c=0;c<Pro40Audio::duplexOutputChannels;++c)output[f*Pro40Audio::duplexOutputChannels+c]=float(100000*(c+1))/8388608.f;
         cycle.mOutputTime.mSampleTime=double(written+host.descriptor.outputTimeline.callbackSample);cycle.mOutputTime.mFlags=kAudioTimeStampSampleTimeValid;
         if(!host.writeOutput(mach_absolute_time(),cycle,137,output)){error=3;break;}
         written+=137;due+=std::chrono::nanoseconds(2854167);std::this_thread::sleep_until(due);
     }
     const bool clean=host.stopAndJoin();
-    std::printf("{\"prepared\":true,\"callbacks\":%u,\"error\":%u,\"cleanup\":%s,\"input_channels\":8,\"output_channels\":6}\n",blocks,error,clean?"true":"false");
+    std::printf("{\"prepared\":true,\"callbacks\":%u,\"error\":%u,\"cleanup\":%s,\"input_channels\":8,\"output_channels\":12}\n",blocks,error,clean?"true":"false");
     return !error && blocks==400 && clean?0:2;
 }

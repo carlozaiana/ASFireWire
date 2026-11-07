@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "DuplexAudioFormat.hpp"
 #include "SourceFrameClock.hpp"
 #include "AudioCallbackTimeline.hpp"
 #include <algorithm>
@@ -14,7 +15,7 @@ struct NativeDuplexDescriptor {
     SourceFrameClock clock;
     uint64_t evidenceSequence=0,prefixFrames=0,evidenceHost=0,preparedHost=0,expiresHost=0;
     uint32_t sampleRate=48000;
-    uint16_t inputChannels=8,outputChannels=6,pcmBits=24;
+    uint16_t inputChannels=duplexInputChannels,outputChannels=duplexOutputChannels,pcmBits=24;
     uint64_t inputFirst=0,initialInputFrames=0,outputFirst=0,primedOutputFrames=0;
     AudioCallbackTimeline inputTimeline,outputTimeline;
     bool validAt(uint64_t now) const noexcept {

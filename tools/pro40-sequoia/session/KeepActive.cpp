@@ -2,6 +2,7 @@
 // An ordinary, silent CoreAudio output client. No FireWire/device-control API.
 // CoreAudio mixes each client's output, so zeroes leave other apps unchanged.
 #include <CoreAudio/CoreAudio.h>
+#include "../DuplexAudioFormat.hpp"
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -40,7 +41,7 @@ bool inspect(AudioObjectID id) {
         AudioObjectID stream=0;AudioStreamBasicDescription format{};
         if(!read(id,address(kAudioDevicePropertyStreams,scope),stream) ||
            !read(stream,address(kAudioStreamPropertyVirtualFormat),format))return false;
-        const UInt32 channels=scope==kAudioObjectPropertyScopeInput?8:6;
+        const UInt32 channels=scope==kAudioObjectPropertyScopeInput?Pro40Audio::duplexInputChannels:Pro40Audio::duplexOutputChannels;
         if(format.mSampleRate!=48000 || format.mChannelsPerFrame!=channels ||
            format.mFormatID!=kAudioFormatLinearPCM || format.mFormatFlags!=kAudioFormatFlagsNativeFloatPacked ||
            format.mBytesPerFrame!=4*channels || format.mBytesPerPacket!=4*channels ||
@@ -57,8 +58,8 @@ OSStatus io(AudioObjectID,const AudioTimeStamp *,const AudioBufferList *,const A
     if(!output || output->mNumberBuffers!=1)valid=false;
     else {
         auto &b=output->mBuffers[0];
-        if(b.mNumberChannels!=6 || !b.mData || !b.mDataByteSize ||
-           b.mDataByteSize%(6*sizeof(float)) || b.mDataByteSize>4096*6*sizeof(float))valid=false;
+        if(b.mNumberChannels!=Pro40Audio::duplexOutputChannels || !b.mData || !b.mDataByteSize ||
+           b.mDataByteSize%(Pro40Audio::duplexOutputChannels*sizeof(float)) || b.mDataByteSize>4096*Pro40Audio::duplexOutputChannels*sizeof(float))valid=false;
         else std::memset(b.mData,0,b.mDataByteSize);
     }
     if(!valid)failures.fetch_add(1,std::memory_order_relaxed);

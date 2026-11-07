@@ -191,7 +191,7 @@ Pro40::NativeSessionResult Pro40::runNativeSession(const NativeSessionOptions &r
     if(options.inputHandoff)return {64,{}};
 #endif
     if(options.livePlayback && (!options.sustained || !options.inputHandoff || options.playback ||
-        !options.livePlayback->valid() || options.livePlayback->channels!=6))return {64,{}};
+        !options.livePlayback->valid() || options.livePlayback->channels>Pro40Packets::playback[0].pcm))return {64,{}};
 #ifndef PRO40_LIVE_PLAYBACK
     if(options.livePlayback)return {64,{}};
 #endif
@@ -343,7 +343,7 @@ Pro40::NativeSessionResult Pro40::runNativeSession(const NativeSessionOptions &r
         if(!status&&stop.requested())status=kIOReturnAborted;
         session.event("duplex-peer-prepared",unsigned(status));
     }
-    if(!status)status=session.setup(options.expectedGeneration);
+    if(!status)status=session.setup(options.expectedGeneration,options.warmupOnly);
     session.event("duplex-owner",unsigned(status));
     // Linux dice-stream.c:289-301 always reselects after owning the device,
     // even at the current rate, to refresh potentially invalid stream state.

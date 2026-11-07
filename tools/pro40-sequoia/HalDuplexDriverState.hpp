@@ -72,7 +72,7 @@ public:
         if(!result.cleanupOK){blocked_=true;reportCleanupFailure();}
         auto prepared=std::move(result.session);
         if(!prepared)return false;
-        if(blocked_ || prepared->descriptor.inputChannels!=8 || prepared->descriptor.outputChannels!=6 ||
+        if(blocked_ || prepared->descriptor.inputChannels!=duplexInputChannels || prepared->descriptor.outputChannels!=duplexOutputChannels ||
            !state_.start(client,prepared,mach_absolute_time())) {
             if(!prepared->stopAndJoin()){blocked_=true;reportCleanupFailure();}return false;
         }

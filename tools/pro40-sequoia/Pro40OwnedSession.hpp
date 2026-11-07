@@ -6,6 +6,7 @@
 #include "OwnershipLease.hpp"
 #include "StartupNotificationTrace.hpp"
 #include "ExistingClockCheck.hpp"
+#include "ColdClockAdmission.hpp"
 #include <IOKit/firewire/IOFireWireLib.h>
 #include <libkern/OSByteOrder.h>
 #include <array>
@@ -97,7 +98,7 @@ struct Pro40OwnedSession {
         event("leave-owner-CAS", unsigned(status));
         return status;
     }
-    IOReturn setup(std::optional<uint32_t> expectedGeneration=std::nullopt) {
+    IOReturn setup(std::optional<uint32_t> expectedGeneration=std::nullopt,bool coldInitialization=false) {
         device = static_cast<IOFireWireLibDeviceRef>(pro40_native_interface());
         auto status = pro40_state(&generation, &remote);
         // Generation is queried through Apple's existing user-client method
@@ -106,10 +107,15 @@ struct Pro40OwnedSession {
         if(!status && expectedGeneration && generation!=*expectedGeneration)return kIOFireWireBusReset;
         Pro40ClockState initial{};
         if (!status) status = state(initial);
-        if (!status && (initial.selected != 0x20c || initial.measured != 48000 ||
-            initial.status != 0x201 || initial.enabled || ownerOf(initial) != noOwner)) status = kIOReturnNotPermitted;
+        const bool clockOK=coldInitialization?Pro40::cold48kClock(initial.selected,initial.status,initial.measured):
+            (initial.selected==0x20c && initial.measured==48000 && initial.status==0x201);
+        if (!status && (!clockOK || initial.enabled || ownerOf(initial) != noOwner)) status = kIOReturnNotPermitted;
         if (status) return status;
-        originalSelected = initial.selected;
+        // Warm-up establishes this fixed-rate driver's48k operating baseline.
+        // Other diagnostics retain their existing strict48k restoration policy.
+        originalSelected = coldInitialization?0x20c:initial.selected;
+        if(coldInitialization)std::fprintf(log,"cold-clock-admission selected=%08x status=%08x measured=%u target=48000\n",
+                                          initial.selected,initial.status,initial.measured);
         unsigned char table[8]{};
         status = pro40_read(generation, 0xffffe0000000ULL, 8, table);
         const uint64_t offset = uint64_t(ownedBe32(table)) * 4, size = uint64_t(ownedBe32(table + 4)) * 4;

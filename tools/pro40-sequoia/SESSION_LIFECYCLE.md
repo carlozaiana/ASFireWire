@@ -35,7 +35,7 @@ release from stale status files. See README before adapting these tools.
 ## Persistent stream
 
 `session/KeepActive.cpp` is an ordinary CoreAudio output client. It writes
-bounded silence into six output channels, allowing CoreAudio to mix other
+bounded silence into twelve output channels, allowing CoreAudio to mix other
 applications over it. It does not access FireWire, select the default audio
 device, record microphone samples or log/allocate inside the callback.
 
@@ -54,3 +54,18 @@ measured app Start calls fell from roughly 2.9–3.1 seconds to 10–11 ms. It d
 not reduce physical audio buffering latency. Recovery starts a fresh native
 stream on the already powered/warmed interface; power cycling or waking from
 sleep is a separate, unqualified lifecycle.
+
+
+## October startup update
+
+The generic session recovery path still requires proven joined cleanup. A separate
+login-only audit can recover a lease from a proven earlier Mac boot after two
+stable idle hardware snapshots. It does not override the current-boot guards
+described above. The warm-up source and hardware-free tests are now included;
+the signed commissioning package and portable installation policy are not.
+See [the November update](UPDATES_2026-11-07.md) and
+[warm-up contract](login-warmup/README.md).
+
+The keeper now covers all twelve playback channels. The latest controlled warm
+client opened in 15 ms. The owner subsequently reported reliable normal use from
+19 October through 7 November; no new end-to-end latency result is implied.

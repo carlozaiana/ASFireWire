@@ -5,6 +5,11 @@
 #include "DuplexMachChannel.hpp"
 #include "NativeStartNegotiation.hpp"
 #include "AudioThreadScheduling.hpp"
+#include "DuplexDeliveryTiming.hpp"
+#include "DuplexDeliveryScheduling.hpp"
+#ifdef PRO40_HAL_CALLBACK_TIMING_LOG
+#include <os/log.h>
+#endif
 #include <chrono>
 #include <exception>
 #include <pthread.h>
@@ -30,6 +35,9 @@ class HalDuplexMachSession final:public HalDuplexSession {
     bool started_=false,joined_=false,cleanupOK_=false,localClosed_=false;
     DuplexSessionBuffers<>::Diagnostic diagnostic_{};
     AudioThreadScheduling scheduling_{};
+    DuplexDeliveryTiming deliveryTiming_{};
+    DuplexDeliveryScheduling::Evidence deliveryScheduling_{};
+    uint64_t lastOutputHost_=0,outputBatches_=0,sendFull_=0,sentOutput_=0,remoteConsumed_=0;
     static void pause(){std::this_thread::sleep_for(std::chrono::microseconds(100));}
     HalDuplexMachSession(const NativeDuplexMessage &offer,std::unique_ptr<DuplexMachChannel> channel,
                         SustainedClockPolicy policy,Wall::time_point deadline,std::chrono::milliseconds stopBudget)
@@ -46,16 +54,19 @@ class HalDuplexMachSession final:public HalDuplexSession {
         return false;
     }
     void run() noexcept {
+        DuplexDeliveryScheduling realtime;
         scheduling_=AudioThreadScheduling::request();
         Negotiation negotiation(Negotiation::Role::receiver,descriptor.clock.identity,channel_->nonce());
         std::array<uint8_t,NativeDuplexPacket::size> reply{};
         bool active=false,readySent=false,ok=scheduling_.accepted() && negotiation.echo(offer_,mach_absolute_time(),reply) &&
             sendUntil(Kind::start,reply,startupDeadline_);
-        AudioFeedBatchFor<6> output;std::array<uint8_t,AudioFeedPacketFor<6>::maxBytes> outputBytes{};
+        AudioFeedBatchFor<duplexOutputChannels> output;std::array<uint8_t,AudioFeedPacketFor<duplexOutputChannels>::maxBytes> outputBytes{};
         size_t outputSize=0;bool pending=false;
         uint64_t remoteConsumed=descriptor.outputFirst,sentOutput=descriptor.outputFirst;
         DuplexMachChannel::Packet packet;
         while(ok && !stop_.load(std::memory_order_acquire)) {
+            deliveryTiming_.begin(mach_absolute_time());
+            realtime.begin();
             if(!active && (Wall::now()>=startupDeadline_ || !negotiation.poll(mach_absolute_time())))break;
             // Bounded receive work prevents either direction starving the other.
             for(unsigned n=0;n<16 && ok;++n) {
@@ -75,8 +86,8 @@ class HalDuplexMachSession final:public HalDuplexSession {
                         buffers_.prepared(now) && negotiation.ready(now,reply) && sendUntil(Kind::start,reply,startupDeadline_);
                     readySent=ok;
                 } else if(packet.kind==Kind::activate && !packet.used && readySent && !active) {
-                    ok=negotiation.poll(now) && buffers_.activate(now);active=ok;
-                    if(ok)ready_.store(true,std::memory_order_release);
+                    ok=negotiation.poll(now) && realtime.enter() && buffers_.activate(now);active=ok;
+                    if(ok){deliveryTiming_={};deliveryTiming_.begin(mach_absolute_time());ready_.store(true,std::memory_order_release);}
                 } else ok=false;
             }
             if(!ok || !buffers_.pump(mach_absolute_time()))break;
@@ -85,16 +96,20 @@ class HalDuplexMachSession final:public HalDuplexSession {
                 // sleeps being honored. Credits still bound all in-flight PCM.
                 for(unsigned n=0;n<8 && ok;++n) {
                     if(!pending && buffers_.copyPlaybackBatch(output,8192-(sentOutput-remoteConsumed))) {
-                        ok=AudioFeedPacketFor<6>::encode(output,outputBytes,outputSize)==AudioFeedError::ok;pending=ok;
+                        ok=AudioFeedPacketFor<duplexOutputChannels>::encode(output,outputBytes,outputSize)==AudioFeedError::ok;pending=ok;
                     }
                     if(!pending || !ok || output.frames>8192-(sentOutput-remoteConsumed))break;
                     const auto r=channel_->send(Kind::output,std::span(outputBytes).first(outputSize));
-                    if(r==Result::ok){ok=buffers_.commitPlayback(output.firstFrame,output.frames);sentOutput+=output.frames;pending=false;}
-                    else {if(r!=Result::full)ok=false;break;}
+                    if(r==Result::ok){ok=buffers_.commitPlayback(output.firstFrame,output.frames);sentOutput+=output.frames;pending=false;
+                        lastOutputHost_=mach_absolute_time();++outputBatches_;}
+                    else {if(r!=Result::full)ok=false;else ++sendFull_;break;}
                 }
             }
-            pause();
+            deliveryTiming_.end(mach_absolute_time());
+            if(realtime.active()){if(!realtime.wait())ok=false;}else pause();
         }
+        sentOutput_=sentOutput;remoteConsumed_=remoteConsumed;
+        const bool schedulingClean=realtime.close();deliveryScheduling_=realtime.evidence;
         // Local callback admission closes before remote confirmation. Stop ACK
         // must mean native users/queues have actually quiesced, not merely that
         // the request was received. Missing/negative confirmation blocks restart.
@@ -114,7 +129,7 @@ class HalDuplexMachSession final:public HalDuplexSession {
                    packet.kind!=Kind::activate && packet.kind!=Kind::credit)break;
             }
         }
-        localClosed_=channel_->close();cleanupOK_=localClosed_ && confirmed;done_.store(true,std::memory_order_release);
+        localClosed_=channel_->close();cleanupOK_=localClosed_ && confirmed && schedulingClean;done_.store(true,std::memory_order_release);
     }
 public:
     // Explicit budgets are caller policy, not latency measurements. Rights are
@@ -142,7 +157,7 @@ public:
         NativeDuplexMessage offer;
         if(!got || packet.kind!=Kind::start || !NativeDuplexPacket::decode(packet.payload(),offer) ||
            offer.kind!=NativeDuplexMessage::Kind::offer || offer.nonce!=channel->nonce() ||
-           offer.descriptor.clock.identity!=expected || offer.descriptor.inputChannels!=8 || offer.descriptor.outputChannels!=6 ||
+           offer.descriptor.clock.identity!=expected || offer.descriptor.inputChannels!=duplexInputChannels || offer.descriptor.outputChannels!=duplexOutputChannels ||
            !offer.descriptor.validAt(mach_absolute_time())) {
             // Peer may have native resources even when no valid offer arrived.
             // Provisioning supervisor must resolve that ownership; never claim
@@ -180,6 +195,19 @@ public:
         if(started_ && !joined_) {
             // Join failure cannot make freeing a live connection safe.
             if(pthread_join(thread_,nullptr)!=0)std::terminate();joined_=true;
+#ifdef PRO40_HAL_CALLBACK_TIMING_LOG
+            // Control owner, once after delivery join; never IO from a callback.
+            const auto &t=deliveryTiming_;
+            os_log_error(OS_LOG_DEFAULT,"Pro40Lab delivery: iterations=%{public}llu lastBegin=%{public}llu lastEnd=%{public}llu maxGap=%{public}llu maxWork=%{public}llu gapBegin=%{public}llu gapEnd=%{public}llu lastOutput=%{public}llu batches=%{public}llu full=%{public}llu sent=%{public}llu credited=%{public}llu outputFault=%{public}u",
+                (unsigned long long)t.iterations,(unsigned long long)t.lastBegin,(unsigned long long)t.lastEnd,
+                (unsigned long long)t.maxGap,(unsigned long long)t.maxWork,(unsigned long long)t.maxGapBegin,(unsigned long long)t.maxGapEnd,
+                (unsigned long long)lastOutputHost_,(unsigned long long)outputBatches_,(unsigned long long)sendFull_,
+                (unsigned long long)sentOutput_,(unsigned long long)remoteConsumed_,unsigned(diagnostic_.output));
+            const auto &s=deliveryScheduling_;
+            os_log_error(OS_LOG_DEFAULT,"Pro40Lab delivery scheduling: entered=%{public}u set=%{public}d after=%{public}d final=%{public}d restore=%{public}d restored=%{public}d intervals=%{public}llu overruns=%{public}llu maxCpuNS=%{public}llu maxWorkNS=%{public}llu",
+                s.entered,s.set,s.after,s.finalRead,s.restore,s.restoredRead,(unsigned long long)s.intervals,
+                (unsigned long long)s.overruns,(unsigned long long)s.maxCpuNS,(unsigned long long)s.maxWorkNS);
+#endif
         }
         return cleanupOK_;
     }

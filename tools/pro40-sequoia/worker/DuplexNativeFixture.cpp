@@ -7,6 +7,7 @@
 #include "../NativeInputFixture.hpp"
 #include "../NativeInputDelivery.hpp"
 #include "../NativeDuplexPolicy.hpp"
+#include "../DuplexAudioFormat.hpp"
 #include <IOKit/IOReturn.h>
 #include <mach/mach_time.h>
 #include <chrono>
@@ -31,7 +32,7 @@ NativeSessionResult runNativeSession(const NativeSessionOptions &options) {
     assert(options.inputHandoff->clock(pair(true)));
     Pro40Packets::NativeReplay replay(0,4,3,1,7,nullptr,nullptr,false,nullptr,options.livePlayback);
     NativeInputDelivery inputDelivery(4,3,7,*options.inputMonitor,options.inputHandoff);
-    auto &gate=*static_cast<PlaybackStartupGate *>(options.livePlayback->context);
+    auto &gate=*static_cast<BasicPlaybackStartupGate<duplexOutputChannels> *>(options.livePlayback->context);
     std::array<uint8_t,448> output{};uint64_t prepared=0,audio=0;uint32_t cycle=918;
 #ifdef PRO40_DELEGATED_FIXTURE
     uint64_t signalFrames=0,silentFrames=0;
@@ -83,10 +84,10 @@ NativeSessionResult runNativeSession(const NativeSessionOptions &options) {
                 // stop and in the explicit first-callback gap; a mixed/misrouted
                 // frame still fails. The collector requires substantial signal.
                 const bool signal=app && Pro40Packets::read32(output.data()+8+f*13*4)!=0x40000000;
-                const int32_t sample=signal && c<6?int32_t(100000*(c+1)):0;
+                const int32_t sample=signal && c<duplexOutputChannels?int32_t(100000*(c+1)):0;
                 if(app && c==0){if(signal)++signalFrames;else ++silentFrames;}
 #else
-                const int32_t sample=app && c<6?Fixture::sample(frame-boundary,c):0;
+                const int32_t sample=app && c<duplexOutputChannels?Fixture::sample(frame-boundary,c):0;
 #endif
                 const uint32_t expected=c==12?0x80000000:0x40000000|(uint32_t(sample)&0xffffff);
                 assert(Pro40Packets::read32(output.data()+8+(f*13+c)*4)==expected);

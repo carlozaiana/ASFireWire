@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // CoreAudio client only. Explicit hardware build reads real microphones and
-// writes silence; ordinary build validates generated8/6 markers. No native APIs.
+// writes silence; ordinary build validates generated8/12 markers. No native APIs.
 #include <CoreAudio/CoreAudio.h>
 #include <algorithm>
 #include <array>
@@ -46,7 +46,7 @@ bool inspect(AudioObjectID id) {
         AudioObjectID stream=0;AudioStreamBasicDescription f{};
         if(!read(id,address(kAudioDevicePropertyStreams,scope),stream) ||
            !read(stream,address(kAudioStreamPropertyVirtualFormat),f))return false;
-        const UInt32 channels=scope==kAudioObjectPropertyScopeInput?8:6;
+        const UInt32 channels=scope==kAudioObjectPropertyScopeInput?Pro40Audio::duplexInputChannels:Pro40Audio::duplexOutputChannels;
         if(f.mSampleRate!=48000 || f.mChannelsPerFrame!=channels || f.mBytesPerFrame!=4*channels ||
            f.mFramesPerPacket!=1 || f.mBytesPerPacket!=4*channels || f.mBitsPerChannel!=32 ||
            f.mFormatID!=kAudioFormatLinearPCM || f.mFormatFlags!=kAudioFormatFlagsNativeFloatPacked)return false;
@@ -57,14 +57,26 @@ bool inspect(AudioObjectID id) {
            !read(id,address(kAudioDevicePropertySafetyOffset,scope),safety) || latency || safety!=expectedSafety)return false;
     }
 #ifdef PRO40_SESSION_PROFILE
-    std::array<UInt32,3> layout{};std::array<UInt32,2> stereo{};
-    if(!read(id,address(kAudioDevicePropertyPreferredChannelLayout,kAudioObjectPropertyScopeOutput),layout) ||
-       layout!=std::array<UInt32,3>{kAudioChannelLayoutTag_MPEG_5_1_A,0,0} ||
+    using Speakers=Pro40Audio::HalSpeakerPreferences<Pro40Audio::duplexOutputChannels>;
+    Speakers::Layout layout{},normalized{};std::array<UInt32,2> stereo{};
+    // CoreAudio may retain a six-speaker preferred layout after the device
+    // grows to twelve output channels. It need not assign every output.
+    auto layoutAddress=address(kAudioDevicePropertyPreferredChannelLayout,kAudioObjectPropertyScopeOutput);
+    UInt32 layoutSize=sizeof(layout);
+    if(AudioObjectGetPropertyData(id,&layoutAddress,0,nullptr,&layoutSize,&layout)!=noErr ||
+       Speakers::normalize(layoutSize,&layout,normalized)!=noErr ||
        !read(id,address(kAudioDevicePropertyPreferredChannelsForStereo,kAudioObjectPropertyScopeOutput),stereo) ||
-       stereo!=std::array<UInt32,2>{1,2})return false;
-    std::puts("PASS: CoreAudio preferred output layout L R C LFE LS RS; stereo 1 2");
+       !Speakers::validStereo(stereo))return false;
+    // CoreAudio can return nominal speaker coordinates after Audio MIDI Setup
+    // saves an assignment, even though the plug-in publishes label-only data.
+    // Validate the public representation through the same normalizer, not the
+    // stricter internal canonical-state predicate.
+    layout=normalized;
+    std::printf("PASS: CoreAudio speaker labels");
+    for(const auto &d:layout.descriptions)std::printf(" %u",d.mChannelLabel);
+    std::printf("; stereo %u %u\n",stereo[0],stereo[1]);
 #endif
-    std::printf("PASS: delegated discovery, 8/6 Float32 48kHz, zero latency, safety input=%u output=%u\n",
+    std::printf("PASS: delegated discovery, 8/12 Float32 48kHz, zero latency, safety input=%u output=%u\n",
         Pro40Audio::HalSilenceProperties::inputSafetyOffset,Pro40Audio::HalSilenceProperties::outputSafetyOffset);return true;
 }
 struct Progress {
@@ -100,9 +112,9 @@ bool buffer(const AudioBufferList *list,UInt32 channels,UInt32 &frames) {
 OSStatus io(AudioObjectID,const AudioTimeStamp *,const AudioBufferList *input,const AudioTimeStamp *inputTime,
             AudioBufferList *output,const AudioTimeStamp *outputTime,void *) {
     UInt32 inFrames=0,outFrames=0;
-    const bool outOK=buffer(output,6,outFrames);
+    const bool outOK=buffer(output,Pro40Audio::duplexOutputChannels,outFrames);
     // Silence on every output callback, including an unexpected overlap.
-    if(outOK)std::fill_n(static_cast<float *>(output->mBuffers[0].mData),outFrames*6,0.f);
+    if(outOK)std::fill_n(static_cast<float *>(output->mBuffers[0].mData),outFrames*Pro40Audio::duplexOutputChannels,0.f);
     if(state.busy.test_and_set(std::memory_order_acquire)){++state.failures;return noErr;}
     bool ok=buffer(input,8,inFrames) && outOK;
     if(ok) {
@@ -123,8 +135,8 @@ OSStatus io(AudioObjectID,const AudioTimeStamp *,const AudioBufferList *input,co
             }
         }else ok=false;
 #if !defined(PRO40_HAL_DELEGATED_HARDWARE) && !defined(PRO40_HAL_SOURCE_LOSS_FIXTURE)
-        if(ok)for(unsigned f=0;f<outFrames;++f)for(unsigned c=0;c<6;++c)
-            static_cast<float *>(output->mBuffers[0].mData)[f*6+c]=float(100000*(c+1))/8388608.f;
+        if(ok)for(unsigned f=0;f<outFrames;++f)for(unsigned c=0;c<Pro40Audio::duplexOutputChannels;++c)
+            static_cast<float *>(output->mBuffers[0].mData)[f*Pro40Audio::duplexOutputChannels+c]=float(100000*(c+1))/8388608.f;
 #endif
     }
     ++state.calls;if(!ok)++state.failures;
@@ -160,8 +172,10 @@ int main(int argc,char **argv) {
     if(endurance || longEndurance || startup)return 64;
 #endif
     const bool capture=endurance || longEndurance || startup || session || std::strcmp(argv[1],"--capture")==0,absent=std::strcmp(argv[1],"--absent")==0;
-    if(!capture && !absent && std::strcmp(argv[1],"--inspect"))return 64;
+    const bool defaultsOnly=std::strcmp(argv[1],"--defaults")==0;
+    if(!capture && !absent && !defaultsOnly && std::strcmp(argv[1],"--inspect"))return 64;
     if(!defaults())return 1;
+    if(defaultsOnly)return 0; // Read-only upgrade discovery; never opens IO.
     AudioObjectID id=0;if(!find(id))return 1;
     if(!id){std::puts("Delegated device absent");return absent?0:1;}
     if(absent || !inspect(id))return 1;
@@ -235,9 +249,9 @@ int main(int argc,char **argv) {
     std::printf(" peaks=");for(unsigned c=0;c<8;++c)std::printf("%s%.9g",c?",":"",state.peaks[c]);
     std::puts(" output=silence");
 #endif
-    std::printf("{\"prepared\":true,\"callbacks\":%llu,\"error\":%llu,\"cleanup\":true,\"input_channels\":8,\"output_channels\":6,\"input_frames\":%llu,\"output_frames\":%llu,\"start_ms\":%lld,\"stop_ms\":%lld}\n",
+    std::printf("{\"prepared\":true,\"callbacks\":%llu,\"error\":%llu,\"cleanup\":true,\"input_channels\":8,\"output_channels\":12,\"input_frames\":%llu,\"output_frames\":%llu,\"start_ms\":%lld,\"stop_ms\":%lld}\n",
         (unsigned long long)state.calls.load(),(unsigned long long)state.failures.load(),(unsigned long long)state.input.frames,
         (unsigned long long)state.output.frames,(long long)std::chrono::duration_cast<std::chrono::milliseconds>(afterStart-beforeStart).count(),
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(afterStop-beforeStop).count());
-    std::puts(ok?"PASS: delegated8/6 host callbacks":"FAIL: delegated host callbacks");return ok?0:1;
+    std::puts(ok?"PASS: delegated8/12 host callbacks":"FAIL: delegated host callbacks");return ok?0:1;
 }

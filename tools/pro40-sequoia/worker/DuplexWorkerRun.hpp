@@ -88,10 +88,16 @@ inline NativeSessionResult runDuplexWorker(int argc,char **argv,StopQuery extern
     const bool haveClock=offered.valid(); // Preserve admitted evidence even after a terminal receiver fault.
     const auto &startup=bridge->startupObservation();
     const auto &bridgeScheduling=bridge->schedulingAfterJoin();
-    char report[4096];const int size=std::snprintf(report,sizeof(report),
+    const auto &deliveryScheduling=bridge->deliverySchedulingAfterJoin();
+    const auto &delivery=bridge->deliveryAfterJoin();
+    const auto &timing=bridge->deliveryTimingAfterJoin();
+    const auto &underrun=bridge->output.underrunAfterJoin();
+    char report[6144];const int size=std::snprintf(report,sizeof(report),
         "{\"schema\":2,\"bridge_fault\":%u,\"startup_fault\":%u,\"playback_fault\":%u,\"cutover\":%llu,\"started_at\":%llu,"
         "\"prepared_frames\":%llu,\"application_frames\":%llu,\"input_frames\":%llu,\"native_cleanup\":%s,\"timing_calibrated\":false,"
         "\"buffering\":{\"lead_frames\":%llu,\"prime_frames\":%llu,\"input_history_frames\":%llu,\"queue_low_water_frames\":%llu,\"queue_high_water_frames\":%llu},"
+        "\"delivery_scheduling\":{\"set\":%d,\"after\":%d,\"final\":%d,\"restore\":%d,\"restored\":%d,\"intervals\":%llu,\"overruns\":%llu,\"max_cpu_ns\":%llu,\"max_work_ns\":%llu},"
+        "\"delivery\":{\"iterations\":%llu,\"last_begin\":%llu,\"last_end\":%llu,\"max_gap\":%llu,\"max_work\":%llu,\"gap_begin\":%llu,\"gap_end\":%llu,\"last_output\":%llu,\"batches\":%llu,\"send_full\":%llu,\"credited\":%llu,\"written\":%llu,\"underrun_first\":%llu,\"underrun_available\":%llu,\"underrun_requested\":%llu},"
         "\"output_presentation\":{\"applied\":%s,\"offset_frames\":%lld,\"unrounded_offset_frames\":%.17Lg,\"sample_at_cutover\":%llu,\"first_elapsed_bus_ticks\":%llu},"
         "\"native_qos\":{\"accepted\":%s,\"before\":%u,\"after\":%u},\"bridge_qos\":{\"accepted\":%s,\"before\":%u,\"after\":%u},"
         "\"have_clock\":%s,\"input_clock_origin\":%llu,\"ticks_numerator\":%llu,\"ticks_denominator\":%llu,"
@@ -106,6 +112,26 @@ inline NativeSessionResult runDuplexWorker(int argc,char **argv,StopQuery extern
         (unsigned long long)policy.leadFrames,(unsigned long long)policy.primeFrames,
         (unsigned long long)Pro40Audio::nativeDuplexInputHistoryFrames,
         (unsigned long long)bridge->output.lowWater(),(unsigned long long)bridge->output.highWater(),
+        deliveryScheduling.set,deliveryScheduling.after,deliveryScheduling.finalRead,deliveryScheduling.restore,deliveryScheduling.restoredRead,
+        (unsigned long long)deliveryScheduling.intervals,
+        (unsigned long long)deliveryScheduling.overruns,
+        (unsigned long long)deliveryScheduling.maxCpuNS,
+        (unsigned long long)deliveryScheduling.maxWorkNS,
+        (unsigned long long)timing.iterations,
+        (unsigned long long)timing.lastBegin,
+        (unsigned long long)timing.lastEnd,
+        (unsigned long long)timing.maxGap,
+        (unsigned long long)timing.maxWork,
+        (unsigned long long)timing.maxGapBegin,
+        (unsigned long long)timing.maxGapEnd,
+        (unsigned long long)delivery.lastOutputHost,
+        (unsigned long long)delivery.outputBatches,
+        (unsigned long long)delivery.sendFull,
+        (unsigned long long)delivery.credited,
+        (unsigned long long)bridge->output.written(),
+        (unsigned long long)underrun.first,
+        (unsigned long long)underrun.available,
+        (unsigned long long)underrun.requested,
         haveClock?"true":"false",(long long)presentation.offsetFrames,presentation.unroundedOffsetFrames,
         (unsigned long long)presentation.sampleAtCutover,(unsigned long long)presentation.firstElapsedBusTicks,
         nativeScheduling.accepted()?"true":"false",unsigned(nativeScheduling.before),unsigned(nativeScheduling.after),

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "DuplexAudioFormat.hpp"
 #include "NativeDuplexPacket.hpp"
 #include "DuplexCallbackSession.hpp"
 #include "AudioFeedSession.hpp"
@@ -8,7 +9,7 @@ namespace Pro40Audio {
 // calls receiveInput/receiveClock/pump/activate/close. Concurrent callback users
 // only use ready/timestamp/readInput/writeOutput. One serialized output producer,
 // one playback consumer. The connection owner must join before reclamation.
-template<size_t Inputs=8,size_t Outputs=6> class DuplexSessionBuffers {
+template<size_t Inputs=duplexInputChannels,size_t Outputs=duplexOutputChannels> class DuplexSessionBuffers {
     // Keep input callback history independently of native transfer batches.
     // A 3,072-frame startup cushion in a 4,096-frame window left only 1,024
     // frames for a late callback. Generated process checks exceeded that

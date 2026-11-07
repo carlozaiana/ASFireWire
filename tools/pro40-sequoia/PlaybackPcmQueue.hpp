@@ -27,6 +27,10 @@ template<size_t Capacity=8192,size_t Channels=6> class PlaybackPcmQueue {
     // Consumer-only read/commit transaction and margin; inspect after teardown.
     size_t pending_=0;
     uint64_t lowWater_=UINT64_MAX;
+public:
+    struct Underrun {uint64_t first=0,available=0,requested=0;};
+private:
+    Underrun underrun_{}; // Consumer-only; inspect after teardown.
     template<class Sample,class Valid,class Convert> PlaybackQueueResult append(
         uint64_t epoch,uint64_t first,std::span<const Sample> samples,Valid valid,Convert convert,
         bool startupSilence=false) noexcept {
@@ -73,6 +77,7 @@ public:
     }
     uint64_t highWater() const noexcept {return highWater_;}
     uint64_t lowWater() const noexcept {return lowWater_;}
+    const Underrun &underrunAfterJoin() const noexcept {return underrun_;}
     uint64_t clamped() const noexcept {return clamped_;}
     PlaybackQueueResult write(uint64_t epoch,uint64_t first,std::span<const int32_t> samples) noexcept {
         return append(epoch,first,samples,[](int32_t v){return v>=-8388608 && v<=8388607;},[](int32_t v){return v;});
@@ -99,7 +104,7 @@ public:
         }
         const auto frames=output.size()/Channels;
         const auto available=written_.load(std::memory_order_acquire)-read;
-        if(frames>available){fail(PlaybackQueueResult::underrun);return false;}
+        if(frames>available){underrun_={first,available,frames};fail(PlaybackQueueResult::underrun);return false;}
         if(pending_ && pending_!=frames){fail(PlaybackQueueResult::state);return false;}
         for(size_t f=0;f<frames;++f)for(size_t c=0;c<Channels;++c)
             output[f*Channels+c]=samples_[((read-origin_+f)%Capacity)*Channels+c];

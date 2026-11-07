@@ -5,9 +5,9 @@
 #include <array>
 #include <cassert>
 int main() {
-    std::array<float,6*512+2> samples;
+    std::array<float,12*512+2> samples;
     samples.fill(.5f);
-    AudioBufferList out{1,{{6,6*512*sizeof(float),samples.data()+1}}};
+    AudioBufferList out{1,{{12,12*512*sizeof(float),samples.data()+1}}};
     AudioBufferList in{1,{{8,8*512*sizeof(float),nullptr}}};
     assert(!io(0,nullptr,&in,nullptr,&out,nullptr,nullptr));
     assert(callbacks==1 && failures==0);
@@ -19,7 +19,7 @@ int main() {
     io(0,nullptr,&in,nullptr,&out,nullptr,nullptr);
     assert(failures==0 && microphone==.75f && samples[1]==0.f);
     in.mBuffers[0].mData=nullptr;
-    for(unsigned bytes:{0u,1u,6*4*4096+24u}) {
+    for(unsigned bytes:{0u,1u,12*4*4096+24u}) {
         out.mBuffers[0].mDataByteSize=bytes;samples[1]=.5f;
         io(0,nullptr,&in,nullptr,&out,nullptr,nullptr);
         assert(samples[1]==.5f && samples.front()==.5f && samples.back()==.5f);

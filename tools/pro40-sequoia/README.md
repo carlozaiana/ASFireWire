@@ -1,69 +1,83 @@
 # Experimental Saffire Pro 40 on macOS Sequoia
 
-**Draft research contribution — work in progress, not a supported driver release
-or a general-purpose installer.** These sources implement a separate native
-Sequoia transport and CoreAudio HAL path. They do not modify or replace ASFW's
-DriverKit/OHCI driver for macOS Tahoe.
+**Separate research implementation — work in progress, not a supported driver
+release or a portable installer.** This native Sequoia/CoreAudio path depends on
+Apple's IOFireWireFamily/IOFireWireLib/NuDCL stack. It does not replace ASFW's
+DriverKit/OHCI implementation or work around the removal of that stack in Tahoe.
 
-An original DICE II/TCD2220 Saffire Pro 40 has been used successfully for Nuendo
-recording/playback and VLC six-channel playback on one M1 Mac Studio running
-macOS Sequoia 15.7.9. The owner also reports practical project use. That is useful
-hardware evidence, not qualification of other interfaces, hosts or long sessions.
-Development used AI assistance; the interface owner performed the reported
-audible checks and physical-meter observations.
+ASFW's maintainer closed [PR #199](https://github.com/mrmidi/ASFireWire/pull/199)
+on 20 October 2026 because this approach is outside ASFW's scope. Development
+material is retained on this fork branch as a separate experiment; it is not an
+upstream-supported ASFW feature or an accepted contribution.
 
-## Scope
+## Current state — 7 November 2026
 
-The current device exposes 8 analog inputs and 6 outputs at internal 48 kHz.
-Output order is L, R, C, LFE, LS, RS. Once provisioned, it is a normal CoreAudio
-device: applications do not need separate driver adaptations. Simultaneous
-Nuendo/browser playback and VLC speaker mapping have been observed working.
+One original DICE II/TCD2220 Saffire Pro 40 is in practical use with an M1 Mac
+Studio on macOS Sequoia 15.7.9. On 7 November the owner reported that it had been
+working flawlessly since the 19 October startup update. This is one-host user
+feedback over that calendar interval, not a continuous 19-day endurance test.
+Controlled tests and their limits are recorded in [VALIDATION.md](VALIDATION.md).
 
-This path depends on Apple's native IOFireWireLib/NuDCL support retained in
-Sequoia. It is not a way to provide native IOFireWireLib on Tahoe, and the code
-must not be merged into the payload-opaque ASFW transport layers as-is. The
-working host uses Apple's Thunderbolt 3-to-2 and Thunderbolt-to-FireWire adapters.
-The tested original Pro 40 reports model `0x000005`, firmware 1.0.12. Newer
-Pro 40 hardware revisions have not been tested.
+The device exposes **8 analog inputs and 12 selectable playback channels at
+internal 48 kHz**. It is a normal CoreAudio device shared by Nuendo, browser
+audio, VLC and other compatible apps. Outputs 1–6 initially describe L, R, C,
+LFE, LS, RS; 7–12 start unassigned. Twelve playback channels do not mean twelve
+analog connectors: the Pro 40 router/MixControl determines their physical
+destinations. Listening tests covered the six connected speakers only.
+
+Recent changes include persistent Audio MIDI Setup speaker assignments,
+twelve-channel formats/IPC, bounded delivery-thread scheduling, explicit 48 kHz
+initialization after use at 44.1 kHz, and guarded previous-boot lease recovery.
+See [the November update](UPDATES_2026-11-07.md) for implementation and evidence.
+
+QuickTime played the tested picture-cue MOV through all six speakers with
+subjectively aligned audio/picture. A WAV using rear-surround labels still lost
+its surround channels in the tested Sequoia QuickTime path; VLC played it, and a
+comparison WAV with side-surround labels played correctly in QuickTime. This is
+a documented mapping limitation, not universal QuickTime 5.1 qualification.
+
+The tested original interface reports model `0x000005`, firmware 1.0.12. The host
+uses Apple's Thunderbolt 3-to-2 and Thunderbolt-to-FireWire adapters. Other Pro 40
+revisions and hosts have not been qualified. Development used AI assistance;
+the interface owner performed the reported listening and physical observations.
 
 ## Architecture and review map
 
 | Area | Entry points | Responsibility |
 | --- | --- | --- |
-| Native device and lifetime | `NativeFireWire.cpp`, `NativeSessionRunner.cpp`, `DmaPreparation.hpp` | Owned native session, bounded descriptor reuse, asynchronous control, generation checks and joined teardown |
-| Packet content | `Pro40Packets.hpp`, `Pro40Replay.hpp`, `Pro40CaptureStartup.hpp` | CIP/AM824 format, measured timing replay, initial-payload quarantine |
-| Input and clock | `SustainedInputHandoff.hpp`, `SustainedInputReceiver.hpp`, `SustainedClockPublication.hpp` | Copied samples, bounded queues/history, continuous device-derived timing |
-| Playback and CoreAudio | `NativeDuplexBridge.hpp`, `PlaybackStartupGate.hpp`, `HalSilenceDriver.cpp` | Admission, six-channel output, eight-channel input, CoreAudio properties and callbacks |
-| Process ownership | `worker/`, `controller-lab/`, `DuplexProvisionServiceMain.cpp` | Development-signed worker/controller identity, CoreAudio helper delegation and independent release receipts |
-| Session management | `session/manage.py`, `session/KeepActive.cpp` | Rebootless recovery and silent CoreAudio output client that holds the native stream open |
+| Native lifetime | `NativeFireWire.cpp`, `NativeSessionRunner.cpp`, `DmaPreparation.hpp` | Native ownership, descriptor reuse, generation checks and joined teardown |
+| Packet content | `Pro40Packets.hpp`, `Pro40Replay.hpp`, `Pro40CaptureStartup.hpp` | CIP/AM824, timing replay and initial-payload quarantine |
+| Input and clock | `SustainedInputHandoff.hpp`, `SustainedInputReceiver.hpp`, `SustainedClockPublication.hpp` | Copied samples, bounded history and device-derived timing |
+| Playback/HAL | `DuplexAudioFormat.hpp`, `NativeDuplexBridge.hpp`, `HalSilenceDriver.cpp`, `HalSpeakerLayout.hpp` | 8/12 geometry, CoreAudio callbacks and stored speaker preferences |
+| Delivery scheduling | `DuplexDeliveryScheduling.hpp`, `DuplexDeliveryTiming.hpp` | Dedicated-owner policy, absolute waits and retained fault evidence |
+| Process ownership | `worker/`, `controller-lab/` | Exact development-signed identities, helper delegation and independent release receipts |
+| Startup/session | `login-warmup/`, `worker/DeviceLease.hpp`, `session/manage.py`, `session/KeepActive.cpp` | Warm-up supervision, boot-bound lease audit, joined recovery and persistent silent output client |
 
-Some names retain their original lab names, including `HalSilenceDriver.cpp` and
-`Pro40 Controller Lab.app`; the session profile carries application audio. The
-snapshot retains supporting diagnostic types and conditional build profiles, but
-only the build/check paths documented here are intended for this contribution.
-It reuses the repository's existing `CipHeader` and `DbcCounter` implementation.
+Some original lab names remain, including `HalSilenceDriver.cpp` and `Pro40
+Controller Lab.app`; the session profile carries application audio. The code
+reuses ASFW's existing `CipHeader` and `DbcCounter`. It must not be merged into
+ASFW's payload-opaque transport layers as-is.
 
 ## Build and offline checks
 
-Use a Mac with Xcode command-line tools and an SDK that includes the native
-FireWire APIs (the working environment is Sequoia). From the repository root:
+Use a Mac with Xcode command-line tools and an SDK containing the native
+FireWire APIs. From the repository root:
 
 ```sh
+bash tools/pro40-sequoia/check-maintenance-update.sh
 bash tools/pro40-sequoia/check-startup-preroll.sh
-python3 tools/pro40-sequoia/session/check-manage.py
-python3 tools/pro40-sequoia/check-duplex-worker-processes.py --build-only --native-worker
+python3 -B tools/pro40-sequoia/check-duplex-worker-processes.py --build-only --native-worker
 ```
 
-The first script runs ASan/UBSan packet, input, replay and clock checks. Its
-optional archived-capture argument is for local research; no capture is needed
-for the public test suite. The last command builds generated-audio process
-fixtures under ASan/UBSan and TSan. Its `--run DIRECTORY` mode registers a
-temporary user job, runs the generated source and removes the job. It neither
-installs a HAL plug-in nor accesses FireWire hardware.
+These commands run hardware-free checks or compile generated fixtures. They do
+not install a driver, start FireWire or restart CoreAudio. The maintenance suite
+covers speaker storage, twelve-channel flow, delivery scheduling, startup,
+lease recovery, teardown and Python supervision. Fixture `--run` mode is a
+separate explicit operation that registers a temporary user job; it is not
+needed for the build-only checks above.
 
-A static development package can also be built. Set `PRO40_SIGNING_IDENTITY`
-to an available Apple Development certificate SHA-1 and `PRO40_SIGNING_TEAM`
-to its team identifier. The following uses a **synthetic fixture GUID**:
+For a static development package, set `PRO40_SIGNING_IDENTITY` to an available
+Apple Development certificate SHA-1 and `PRO40_SIGNING_TEAM` to its team ID:
 
 ```sh
 python3 tools/pro40-sequoia/controller-lab/check-package.py \
@@ -73,57 +87,44 @@ python3 tools/pro40-sequoia/controller-lab/check-package.py \
   --enable-original-peer-diagnostic --enable-gated-worker-diagnostic \
   --duplex-hardware --duplex-delegated --session-profile \
   --real-guid 00130e0400000001
-```
-
-This builds and verifies the signed package without registering it or starting
-the interface. Given the package directory printed by that command:
-
-```sh
 python3 tools/pro40-sequoia/hal-silence/build-delegated-host.py PACKAGE_DIRECTORY --hardware
 ```
 
-This creates and checks a matching, uninstalled HAL bundle. Development pins
-are generated locally. Do not replace exact identity/ownership checks with
-wildcards to get a package running.
+The GUID is a **synthetic fixture identity**. These commands build and inspect
+an uninstalled package/HAL; they do not register or start it. Exact development
+identity pins are generated locally and must not be replaced with wildcards.
 
-**Portable hardware installation is unfinished.** `session/manage.py` and
-`session/prepare.py` are included to make the tested recovery/installation logic
-reviewable, not as a turnkey deployment procedure. Their hardware lease and
-warm-up checks still describe the development-host contract; the private
-device identifier has been replaced with the synthetic fixture above. Merely
-changing the package's `--real-guid` does not port that contract. The original
-machine's login warm-up package, commissioning scripts and private receipts are
-not distributed. Do not install or register this snapshot on another machine
-until those policies have been reviewed and adapted to its actual identity,
-startup, routing and release evidence. No ready-to-install binaries are supplied.
+**Portable deployment remains unfinished.** Session management and login warm-up
+source are supplied for review, not as a turnkey installer. Their fixed identity,
+lease path, signing and once-per-boot policies require deliberate adaptation.
+Changing only `--real-guid` does not port the whole contract. Private commissioning
+recipes, historical receipts and the working machine's signed packages are not
+distributed. No ready-to-install binary or certificate is supplied.
 
-## Known limitations and next work
+## Limits
 
-- The cold-start mute issue still needs a root-cause fix. The working host uses
-  one discarded warm-up session at login. Keep-active waits for successful
-  current-boot warm-up evidence; it does not retry failed hardware starts.
-- Physical round-trip latency was approximately **225.8 ms** in an earlier
-  loopback test. Direct monitoring is currently the practical microphone path.
-  The **10–11 ms** warm-client Start time is a different measurement.
-- Three-hour hardware sessions, sleep/wake, hot unplug, power-cycle recovery,
-  portable installation and login with the new keep-active client remain
-  unqualified. A 24-hour counter bound is not endurance certification.
-- Other sample rates, clock sources, digital channels, MIDI, other interface
-  revisions, hardware volume controls and QuickTime 5.1 behavior are unfinished
-  or untested. QuickTime's observed surround mapping is not yet correct; VLC's
-  six-output tone check passed on the working host.
+- Cold input mute still relies on a finite, input-discarding login warm-up.
+  New clock/lease handling fixes specific startup blockers, not the root cause
+  of the underlying cold-input behavior. Failed current-boot attempts are not retried.
+- An earlier physical round-trip measurement was approximately **225.8 ms**.
+  The 15 ms warm-client opening measurement is not audio latency. Direct
+  monitoring remains the practical microphone path.
+- No controlled three-hour run, systematic sleep/wake or hot-unplug qualification,
+  portable installation, other interface/rate/clock qualification or MIDI support
+  is claimed. Exposing channels 7–12 does not establish their physical routing.
+- The latest observed automatic login found an already-clean lease. Previous-boot
+  recovery logic has software coverage and a related manual idle-audit hardware
+  result, but automatic recovery of a stamped stale active lease still needs
+  its own hardware observation.
 
-See [validation](VALIDATION.md), [startup handling](STARTUP.md) and
-[session recovery](SESSION_LIFECYCLE.md) for the evidence and its limits.
-This contribution is for architectural review and collaboration before
-considering an upstream-supported deployment path.
+See [startup](STARTUP.md), [session lifecycle](SESSION_LIFECYCLE.md) and
+[warm-up contract](login-warmup/README.md) for the specific guards.
 
 ## Source and evidence provenance
 
-These are selected development sources, tests and build helpers from a separate
-local research checkout, exported onto current upstream without its local Git
-history. No raw audio, device captures, logs, machine paths, certificates, private
-keys, installed packages or reference-stack sources are included. Unit tests use
-synthetic samples and identifiers. Reference comments describe behavioral
-cross-checks against Linux and Apple sources; their implementations were not
-copied. The contribution uses the repository's Apache-2.0 license.
+This is a selected source snapshot from the development checkout, preserving the
+existing public branch history. No raw audio, device captures, private host paths,
+signing material, installed binaries or reference-stack implementations are
+included. Tests use generated data and synthetic identities. Linux and Apple
+sources were consulted for behavior, not copied. The repository's Apache-2.0
+license applies. All changes remain under `tools/pro40-sequoia/`.

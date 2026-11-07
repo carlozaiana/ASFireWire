@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "DuplexAudioFormat.hpp"
 #include <CoreAudio/AudioServerPlugIn.h>
 #include "HalSilenceModel.hpp"
 #include <array>
 #include <cstring>
 #include <optional>
+#ifdef PRO40_SESSION_PROFILE
+#include "HalSpeakerLayout.hpp"
+#endif
 #if defined(PRO40_HAL_DELEGATED_HARDWARE) && !defined(PRO40_HAL_DELEGATED_AUDIO)
 #error Hardware HAL requires the delegated session lifecycle.
 #endif
@@ -57,7 +61,9 @@ public:
 #endif
     }
     struct Value {
-        std::array<unsigned char,sizeof(AudioStreamRangedDescription)> bytes{};
+        static constexpr size_t capacity=sizeof(AudioStreamRangedDescription)>12+Outputs*sizeof(AudioChannelDescription)?
+            sizeof(AudioStreamRangedDescription):12+Outputs*sizeof(AudioChannelDescription);
+        std::array<unsigned char,capacity> bytes{};
         UInt32 size=0;CFStringRef string=nullptr;
         template<class T> static Value data(const T &data) {
             static_assert(sizeof(T)<=sizeof(bytes));Value v;v.size=sizeof(T);
@@ -73,13 +79,13 @@ public:
     static std::optional<Value> lookup(AudioObjectID object,const AudioObjectPropertyAddress &a,bool running=false,bool alive=true) {
         if(!valid(object))return {};
 #ifdef PRO40_SESSION_PROFILE
-        // User's fixed physical 1..6 order. Per-channel names are scoped to the
-        // device output elements, not six independent CoreAudio streams.
+        // AudioHardwareBase.h: ElementName names a physical channel. Speaker
+        // roles are separate mutable layout metadata, not connector names.
         if(object==device && a.mScope==kAudioObjectPropertyScopeOutput &&
-           a.mSelector==kAudioObjectPropertyName && a.mElement>=1 && a.mElement<=Outputs) {
-            static_assert(Outputs==6);
-            const CFStringRef names[]={CFSTR("1 — Left"),CFSTR("2 — Right"),CFSTR("3 — Centre"),
-                CFSTR("4 — LFE"),CFSTR("5 — Left Surround"),CFSTR("6 — Right Surround")};
+           a.mSelector==kAudioObjectPropertyElementName && a.mElement>=1 && a.mElement<=Outputs) {
+            const CFStringRef names[]={CFSTR("Output 1"),CFSTR("Output 2"),CFSTR("Output 3"),
+                CFSTR("Output 4"),CFSTR("Output 5"),CFSTR("Output 6"),CFSTR("Output 7"),
+                CFSTR("Output 8"),CFSTR("Output 9"),CFSTR("Output 10"),CFSTR("Output 11"),CFSTR("Output 12")};
             return Value::text(names[a.mElement-1]);
         }
 #endif
@@ -94,7 +100,7 @@ public:
             case kAudioObjectPropertyName:
 #ifdef PRO40_SESSION_PROFILE
 #ifdef PRO40_HAL_DELEGATED_HARDWARE
-                return Value::text(object==stream?CFSTR("Analogue Inputs 1–8"):object==outputStream?CFSTR("Surround Outputs 1–6"):CFSTR("Saffire Pro 40 (Experimental)"));
+                return Value::text(object==stream?CFSTR("Analogue Inputs 1–8"):object==outputStream?CFSTR("Playback Outputs 1–12"):CFSTR("Saffire Pro 40 (Experimental)"));
 #else
                 return Value::text(CFSTR("Pro 40 Session Fixture (No Hardware)"));
 #endif
@@ -157,12 +163,12 @@ public:
 #endif
             }
 #ifdef PRO40_SESSION_PROFILE
-            // SDK AudioHardwareBase.h:722-729; CoreAudioBaseTypes.h:1225.
-            // Tagged layout has a 12-byte header and zero channel descriptions.
+            // The fixed-size defaults establish discovery/size. The real HAL
+            // getters serve the current owned preferences with this same size.
             if(output && a.mSelector==kAudioDevicePropertyPreferredChannelsForStereo)
                 return Value::data(std::array<UInt32,2>{1,2});
             if(output && a.mSelector==kAudioDevicePropertyPreferredChannelLayout)
-                return Value::data(std::array<UInt32,3>{kAudioChannelLayoutTag_MPEG_5_1_A,0,0});
+                return Value::data(HalSpeakerPreferences<Outputs>::defaults().layout);
 #endif
             // The real Sequoia host queries output safety offset even for this
             // input-only device (system-test-20260925-125552). Lab profiles
@@ -254,7 +260,9 @@ public:
         *used=value.size;return noErr;
     }
 };
-#if defined(PRO40_HAL_DUPLEX_AUDIO) || defined(PRO40_HAL_DUPLEX_TIMING)
+#if defined(PRO40_HAL_DUPLEX_AUDIO)
+using HalSilenceProperties=BasicHalAudioProperties<duplexInputChannels,duplexOutputChannels>;
+#elif defined(PRO40_HAL_DUPLEX_TIMING)
 using HalSilenceProperties=BasicHalAudioProperties<8,6>;
 #else
 using HalSilenceProperties=BasicHalAudioProperties<>;

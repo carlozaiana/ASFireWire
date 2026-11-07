@@ -5,6 +5,11 @@
 #include <cstring>
 #include <array>
 #include <cstdlib>
+#ifdef PRO40_SESSION_PROFILE
+#include "HalSpeakerLayout.hpp"
+#include "DuplexAudioFormat.hpp"
+static CFPropertyListRef speakerStorage=nullptr;
+#endif
 int main(int argc,char **argv) {
     assert(argc>=2 && argc<=5);
     const UInt32 expectedSafety=argc>=3?UInt32(std::strtoul(argv[2],nullptr,10)):0;
@@ -31,6 +36,14 @@ int main(int argc,char **argv) {
     assert(!CFPlugInInstanceCreate(nullptr,factory,IUnknownUUID));
     AudioServerPlugInHostInterface host{};
     host.PropertiesChanged=[](AudioServerPlugInHostRef,AudioObjectID,UInt32,const AudioObjectPropertyAddress *)->OSStatus{return noErr;};
+#ifdef PRO40_SESSION_PROFILE
+    host.CopyFromStorage=[](AudioServerPlugInHostRef,CFStringRef,CFPropertyListRef *out)->OSStatus {
+        *out=speakerStorage?CFRetain(speakerStorage):nullptr;return noErr;
+    };
+    host.WriteToStorage=[](AudioServerPlugInHostRef,CFStringRef,CFPropertyListRef value)->OSStatus {
+        if(speakerStorage)CFRelease(speakerStorage);speakerStorage=CFRetain(value);return noErr;
+    };
+#endif
     host.RequestDeviceConfigurationChange=[](AudioServerPlugInHostRef,AudioObjectID,UInt64,void *)->OSStatus{return kAudioHardwareUnsupportedOperationError;};
     for(unsigned n=0;n<20;++n) {
         auto driver=static_cast<AudioServerPlugInDriverRef>(CFPlugInInstanceCreate(nullptr,factory,kAudioServerPlugInTypeUUID));assert(driver);
@@ -53,22 +66,33 @@ int main(int argc,char **argv) {
         assert(api.GetPropertyData(driver,1,0,&translate,sizeof(uid),&uid,sizeof(device),&used,&device)==noErr && device==2);
 #ifdef PRO40_SESSION_PROFILE
         AudioObjectPropertyAddress layout{kAudioDevicePropertyPreferredChannelLayout,kAudioObjectPropertyScopeOutput,0};
+        using Speakers=Pro40Audio::HalSpeakerPreferences<Pro40Audio::duplexOutputChannels>;
         UInt32 layoutSize=0;Boolean settable=true;
-        assert(api.GetPropertyDataSize(driver,device,0,&layout,0,nullptr,&layoutSize)==noErr && layoutSize==12);
-        assert(api.IsPropertySettable(driver,device,0,&layout,&settable)==noErr && !settable);
+        assert(api.GetPropertyDataSize(driver,device,0,&layout,0,nullptr,&layoutSize)==noErr && layoutSize==sizeof(Speakers::Layout));
+        assert(api.IsPropertySettable(driver,device,0,&layout,&settable)==noErr && settable);
         std::array<UInt32,4> words{99,99,99,99};
         assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,11,&used,words.data())==kAudioHardwareBadPropertySizeError && used==0 && words[0]==99);
-        assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,16,&used,words.data())==noErr && used==12);
-        assert(words[0]==kAudioChannelLayoutTag_MPEG_5_1_A && words[1]==0 && words[2]==0 && words[3]==99);
+        Speakers::Layout current;
+        assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,sizeof(current),&used,&current)==noErr && used==sizeof(current));
+        auto expectedLayout=Speakers::defaults().layout;
+        if(n==1)std::swap(expectedLayout.descriptions[0],expectedLayout.descriptions[1]);
+        assert(std::memcmp(&current,&expectedLayout,sizeof(current))==0);
+        if(n<2) {
+            std::swap(current.descriptions[0],current.descriptions[1]);
+            assert(api.SetPropertyData(driver,device,0,&layout,0,nullptr,sizeof(current),&current)==noErr);
+            Speakers::Layout actual;
+            assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,sizeof(actual),&used,&actual)==noErr && std::memcmp(&actual,&current,sizeof(actual))==0);
+        }
         layout.mScope=kAudioObjectPropertyScopeInput;assert(!api.HasProperty(driver,device,0,&layout));
         layout={kAudioDevicePropertyPreferredChannelsForStereo,kAudioObjectPropertyScopeOutput,0};
         assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,16,&used,words.data())==noErr && used==8 && words[0]==1 && words[1]==2);
-        for(UInt32 channel=1;channel<=7;++channel) {
-            layout={kAudioObjectPropertyName,kAudioObjectPropertyScopeOutput,channel};
-            if(channel==7){assert(!api.HasProperty(driver,device,0,&layout));continue;}
+        for(UInt32 channel=1;channel<=Pro40Audio::duplexOutputChannels+1;++channel) {
+            layout={kAudioObjectPropertyElementName,kAudioObjectPropertyScopeOutput,channel};
+            if(channel==Pro40Audio::duplexOutputChannels+1){assert(!api.HasProperty(driver,device,0,&layout));continue;}
             CFStringRef name=nullptr;
             assert(api.GetPropertyData(driver,device,0,&layout,0,nullptr,sizeof(name),&used,&name)==noErr && used==sizeof(name) && name);
-            const CFStringRef expectedNames[]={CFSTR("1 — Left"),CFSTR("2 — Right"),CFSTR("3 — Centre"),CFSTR("4 — LFE"),CFSTR("5 — Left Surround"),CFSTR("6 — Right Surround")};
+            const CFStringRef expectedNames[]={CFSTR("Output 1"),CFSTR("Output 2"),CFSTR("Output 3"),CFSTR("Output 4"),CFSTR("Output 5"),CFSTR("Output 6"),
+                CFSTR("Output 7"),CFSTR("Output 8"),CFSTR("Output 9"),CFSTR("Output 10"),CFSTR("Output 11"),CFSTR("Output 12")};
             assert(CFEqual(name,expectedNames[channel-1]));CFRelease(name);
         }
         for(auto scope:{kAudioObjectPropertyScopeInput,kAudioObjectPropertyScopeOutput})for(auto selector:{kAudioDevicePropertyDeviceCanBeDefaultDevice,kAudioDevicePropertyDeviceCanBeDefaultSystemDevice}) {
@@ -96,6 +120,9 @@ int main(int argc,char **argv) {
         assert(api.Release(driver)==0);
         // No saved callback/table pointer is used after the final Release.
     }
+#ifdef PRO40_SESSION_PROFILE
+    if(speakerStorage){CFRelease(speakerStorage);speakerStorage=nullptr;}
+#endif
     CFRelease(factories);CFRelease(plugin);
     std::puts(discoveryOnly?"PASS: local CFPlugIn discovery/properties, 20 create/release cycles; no IO or HAL installation.":"PASS: local CFPlugIn metadata discovery, registered factory, 20 create/IO/release cycles. Not installed in HAL.");
 }

@@ -18,7 +18,7 @@ public:
     explicit HalSourceLossFixture(const NativeDuplexDescriptor &d):HalDuplexSession(d),
         deadline_(d.clock.origin+uint64_t(__uint128_t(2000000000)*d.clock.identity.denom/d.clock.identity.numer)){}
     static HalDuplexPreparation prepare(uint64_t seed,uint32_t numer,uint32_t denom) {
-        NativeDuplexDescriptor d{};d.inputChannels=8;d.outputChannels=6;
+        NativeDuplexDescriptor d{};d.inputChannels=duplexInputChannels;d.outputChannels=duplexOutputChannels;
         d.clock.identity={seed,seed,1,numer,denom};d.clock.origin=mach_absolute_time();
         return {std::make_unique<HalSourceLossFixture>(d),true};
     }

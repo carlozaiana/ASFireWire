@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "DuplexAudioFormat.hpp"
 // Controlled checkout lab, actual spawned managed worker, generated audio only.
 // IdentityHelperLab has a documented helper-path TOCTOU limit; this fixture is
 // not the signed packaged controller and never opens FireWire or an audio device.
@@ -24,7 +25,7 @@ static int result(int code,bool entered=false) {
     if(entered)std::printf("{\"reason\":\"%s\",\"transfer\":0,\"evidence\":0,\"cleanup\":0}",code?"interrupted":"completed");
     else std::printf("null");std::puts("}");std::fflush(stdout);return code;
 }
-static int32_t sample(uint64_t frame,unsigned channel) {return int32_t((frame-512)*6+channel)-400;}
+static int32_t sample(uint64_t frame,unsigned channel) {return int32_t((frame-512)*duplexOutputChannels+channel)-400;}
 static int worker(int argc,char **argv) {
     Pro40::ParentWatch parent;assert(parent.start(0));
     const Pro40::StopQuery stop{[](void *p)noexcept{return static_cast<Pro40::ParentWatch *>(p)->requested();},&parent};
@@ -46,7 +47,7 @@ static int worker(int argc,char **argv) {
     // the authenticated private endpoint exchange all succeed.
     std::fprintf(stderr,"duplex-entered\n");std::fflush(stderr);
     auto source=std::make_unique<DuplexGeneratedSource>();auto d=source->descriptor();
-    auto output=std::make_unique<PlaybackPcmQueue<>>(19);
+    auto output=std::make_unique<PlaybackPcmQueue<8192,duplexOutputChannels>>(19);
     auto peer=std::make_unique<NativeDuplexSourceConnection<SustainedInputReceiver<>>>(
         std::move(channel),*source->receiver,*output,d,source->policy(),mach_absolute_time());
     assert(!peer->failed());auto next=Wall::now()+16ms,deadline=Wall::now()+3s;bool confirmed=false;uint64_t checked=0;
@@ -55,10 +56,10 @@ static int worker(int argc,char **argv) {
         if(Wall::now()>=next && !peer->stopRequested()){source->step();next+=16ms;}
         peer->poll(mach_absolute_time());
         if(peer->primed()) {
-            std::array<int32_t,8*6> samples;
+            std::array<int32_t,8*duplexOutputChannels> samples;
             while(output->written()-output->consumed()>=8) {
                 const auto first=output->consumed();assert(output->read(first,samples));
-                for(unsigned n=0;n<8;++n)for(unsigned c=0;c<6;++c)assert(samples[n*6+c]==(first+n<512?0:sample(first+n,c)));
+                for(unsigned n=0;n<8;++n)for(unsigned c=0;c<duplexOutputChannels;++c)assert(samples[n*duplexOutputChannels+c]==(first+n<512?0:sample(first+n,c)));
                 assert(output->commit(first,8));checked=first+8;
             }
         }
@@ -159,7 +160,7 @@ static void round(mach_port_t service,const char *name,const char *executable,co
         AudioServerPlugInIOCycleInfo cycle{};cycle.mInputTime.mSampleTime=double(inputFirst);cycle.mInputTime.mFlags=kAudioTimeStampSampleTimeValid;
         std::array<float,137*8> input;assert(host.readInput(mach_absolute_time(),cycle,137,input));
         for(unsigned n=0;n<137;++n)for(unsigned c=0;c<8;++c)assert(input[n*8+c]==float(Fixture::sample(inputFirst+n,c))/8388608.f);
-        uint64_t written=host.descriptor.outputFirst+host.descriptor.primedOutputFrames;std::array<float,137*6> samples;
+        uint64_t written=host.descriptor.outputFirst+host.descriptor.primedOutputFrames;std::array<float,137*duplexOutputChannels> samples;
 #ifdef PRO40_NATIVE_DUPLEX_RUNNER_CHECK
         auto callbackDue=Wall::now();
 #endif
@@ -178,7 +179,7 @@ static void round(mach_port_t service,const char *name,const char *executable,co
             for(unsigned n=0;n<137;++n)for(unsigned c=0;c<8;++c)
                 assert(input[n*8+c]==float(Fixture::sample(first+n,c))/8388608.f);
 #endif
-            for(unsigned n=0;n<137;++n)for(unsigned c=0;c<6;++c)samples[n*6+c]=float(
+            for(unsigned n=0;n<137;++n)for(unsigned c=0;c<duplexOutputChannels;++c)samples[n*duplexOutputChannels+c]=float(
 #ifdef PRO40_NATIVE_DUPLEX_RUNNER_CHECK
                 Fixture::sample(written+n,c)
 #else

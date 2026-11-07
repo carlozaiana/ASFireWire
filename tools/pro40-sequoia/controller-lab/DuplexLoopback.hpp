@@ -31,10 +31,10 @@ struct DuplexLoopbackContent {
     }
     void tones(uint64_t first,std::span<float> out) const noexcept {
         std::fill(out.begin(),out.end(),0.f);
-        for(unsigned m=0;m<markers;++m)for(size_t f=0;f<out.size()/6;++f) {
+        for(unsigned m=0;m<markers;++m)for(size_t f=0;f<out.size()/Pro40Audio::duplexOutputChannels;++f) {
             const auto at=first+f;
             if(at>=markerStart(m) && at-markerStart(m)<markerFrames)
-                out[f*6+5]=reference[at-markerStart(m)];
+                out[f*Pro40Audio::duplexOutputChannels+5]=reference[at-markerStart(m)];
         }
     }
     void observe(uint64_t first,std::span<const float> input) noexcept {

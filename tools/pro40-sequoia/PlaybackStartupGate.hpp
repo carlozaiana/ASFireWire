@@ -10,8 +10,8 @@ enum class PlaybackStartupFault:uint32_t {none,plan,late,unprimed,sequence,sourc
 // After it, missing PCM is terminal; never insert silence or slide the boundary.
 // PCM silence representation: references/linux-dice/amdtp-am824.c:209-221.
 // Existing sequence replay: amdtp-stream.c:469-530. No wire code copied.
-class PlaybackStartupGate final {
-    PlaybackPcmQueue<> &queue_;
+template<size_t Channels> class BasicPlaybackStartupGate final {
+    PlaybackPcmQueue<8192,Channels> &queue_;
     std::atomic<uint64_t> boundary_{UINT64_MAX},next_{0},startedAt_{UINT64_MAX};
     std::atomic<bool> armed_{false};
     std::atomic<PlaybackStartupFault> fault_{PlaybackStartupFault::none};
@@ -25,10 +25,10 @@ class PlaybackStartupGate final {
         auto ok=PlaybackStartupFault::none;fault_.compare_exchange_strong(ok,why,std::memory_order_acq_rel);return false;
     }
 public:
-    explicit PlaybackStartupGate(PlaybackPcmQueue<> &queue):queue_(queue) {
+    explicit BasicPlaybackStartupGate(PlaybackPcmQueue<8192,Channels> &queue):queue_(queue) {
         if(queue.consumed() || queue.written() || queue.fault()!=PlaybackQueueResult::ok)fail(PlaybackStartupFault::plan);
     }
-    PlaybackStartupGate(const PlaybackStartupGate &)=delete;
+    BasicPlaybackStartupGate(const BasicPlaybackStartupGate &)=delete;
     PlaybackStartupFault fault()const noexcept{return fault_.load(std::memory_order_acquire);}
     uint64_t nextNativeFrame()const noexcept{return next_.load(std::memory_order_acquire);}
     uint64_t firstNativeFrame()const noexcept{return boundary_.load(std::memory_order_acquire);}
@@ -57,7 +57,7 @@ public:
     }
     bool read(uint64_t first,std::span<int32_t> output)noexcept {
         if(fault()!=PlaybackStartupFault::none)return false;
-        if(output.size()!=8*6 || first!=nextNativeFrame() || first>UINT64_MAX-8)
+        if(output.size()!=8*Channels || first!=nextNativeFrame() || first>UINT64_MAX-8)
             return fail(PlaybackStartupFault::sequence);
         if(!pending_) {
             const auto boundary=firstNativeFrame();
@@ -85,10 +85,10 @@ public:
         pending_=false;next_.store(first+frames,std::memory_order_release);return true;
     }
     Pro40Packets::PlaybackPcmSource port()noexcept {
-        return {this,6,[](void *p,uint64_t f,std::span<int32_t> s)noexcept{return static_cast<PlaybackStartupGate *>(p)->read(f,s);},
-            [](void *p,uint64_t f,unsigned n)noexcept{return static_cast<PlaybackStartupGate *>(p)->commit(f,n);},
+        return {this,Channels,[](void *p,uint64_t f,std::span<int32_t> s)noexcept{return static_cast<BasicPlaybackStartupGate *>(p)->read(f,s);},
+            [](void *p,uint64_t f,unsigned n)noexcept{return static_cast<BasicPlaybackStartupGate *>(p)->commit(f,n);},
             [](void *p,const Pro40Packets::PlaybackPacketPosition &position)noexcept{
-                auto &self=*static_cast<PlaybackStartupGate *>(p);
+                auto &self=*static_cast<BasicPlaybackStartupGate *>(p);
                 if(!self.firstPositionReady_.load(std::memory_order_relaxed)) {
                     self.positions_[0]=position;
                     self.firstPositionReady_.store(true,std::memory_order_release);
@@ -102,4 +102,7 @@ public:
     }
     const auto &positions()const noexcept{return positions_;} // Native owner quiesced.
 };
+// Existing standalone six-channel playback diagnostic. The session profile
+// instantiates the same gate for its full channel count.
+using PlaybackStartupGate=BasicPlaybackStartupGate<6>;
 }

@@ -5,6 +5,8 @@
 #include "PlaybackStartupGate.hpp"
 #include "NativeSessionRunner.hpp"
 #include "AudioThreadScheduling.hpp"
+#include "DuplexDeliveryTiming.hpp"
+#include "DuplexDeliveryScheduling.hpp"
 #include "NativeDuplexPolicy.hpp"
 #include "NativePlaybackTimeline.hpp"
 #include <chrono>
@@ -49,6 +51,9 @@ class NativeDuplexBridge final {
     NativeClockSnapshot offeredSnapshot_{};
     NativePlaybackTimeline offeredPresentation_{};
     AudioThreadScheduling scheduling_{}; // Read only after finish joins.
+    DuplexDeliveryTiming deliveryTiming_{};
+    Connection::Delivery delivery_{};
+    DuplexDeliveryScheduling::Evidence deliveryScheduling_{};
     struct StartupObservation {
         NativeClockSnapshot snapshot{};
         uint64_t now=0,prefix=0,oldest=0,next=0;
@@ -102,11 +107,14 @@ class NativeDuplexBridge final {
         if(connection_->failed())fail(NativeDuplexBridgeFault::connection);
     }
     void consume()noexcept {
+        DuplexDeliveryScheduling realtime;
         scheduling_=AudioThreadScheduling::request();
         if(!scheduling_.accepted()){fail(NativeDuplexBridgeFault::startup);return;}
         const auto deadline=Wall::now()+policy_.qualificationBudget;
         std::optional<Wall::time_point> closeDeadline;
         for(;;) {
+            deliveryTiming_.begin(mach_absolute_time());
+            realtime.begin();
             const bool done=nativeDone_.load(std::memory_order_acquire);
             if(done && !closeDeadline)closeDeadline=Wall::now()+std::chrono::milliseconds(500);
             if(external_.requested())stop_.store(true,std::memory_order_release);
@@ -124,21 +132,29 @@ class NativeDuplexBridge final {
                 if(connection_->failed())fail(NativeDuplexBridgeFault::connection);
                 if(connection_->stopRequested())stop_.store(true,std::memory_order_release);
                 if(!done && !armed_ && connection_->primed()) {
-                    if(!playback.arm())fail(NativeDuplexBridgeFault::playback);else armed_=true;
+                    if(!realtime.enter())fail(NativeDuplexBridgeFault::startup);
+                    else {
+                        deliveryTiming_={};deliveryTiming_.begin(mach_absolute_time());
+                        if(!playback.arm())fail(NativeDuplexBridgeFault::playback);else armed_=true;
+                    }
                 }
                 if(done && connection_->stopRequested() && !confirmed_) {
                     confirmed_=connection_->confirmStopped(nativeClean_);
                 }
                 if(done && (connection_->closed() || Wall::now()>=*closeDeadline))break;
             } else if(done)break;
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            deliveryTiming_.end(mach_absolute_time());
+            if(realtime.active()) {
+                if(!realtime.wait())fail(NativeDuplexBridgeFault::connection);
+            } else std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
+        localClean_=realtime.close();deliveryScheduling_=realtime.evidence;
     }
 public:
     SustainedInputHandoff handoff;
     Receiver receiver;
-    PlaybackPcmQueue<> output;
-    PlaybackStartupGate playback;
+    PlaybackPcmQueue<8192,duplexOutputChannels> output;
+    BasicPlaybackStartupGate<duplexOutputChannels> playback;
     Pro40Packets::PlaybackPcmSource source;
     NativeDuplexBridge(std::unique_ptr<DuplexMachChannel> channel,NativeDuplexBridgePolicy policy,Pro40::StopQuery external={})
         :policy_(policy),external_(external),channel_(std::move(channel)),handoff(policy.identity.numer,policy.identity.denom),
@@ -161,7 +177,7 @@ public:
             nativeClean_=nativeClean;nativeDone_.store(true,std::memory_order_release);
             if(pthread_join(thread_,nullptr)!=0)std::terminate();joined_=true;
             // Connection and its private rights have no concurrent users now.
-            if(connection_)localClean_=connection_->closeLocal();
+            if(connection_){delivery_=connection_->deliveryAfterJoin();localClean_=connection_->closeLocal() && localClean_;}
             if(channel_)localClean_=channel_->close() && localClean_;
             connection_.reset();channel_.reset();
         }
@@ -174,5 +190,8 @@ public:
     const auto &offeredController()const noexcept{return offeredController_;} // After finish only.
     const auto &offeredPresentation()const noexcept{return offeredPresentation_;} // After finish only.
     const auto &schedulingAfterJoin()const noexcept{return scheduling_;}
+    const auto &deliveryAfterJoin()const noexcept{return delivery_;}
+    const auto &deliveryTimingAfterJoin()const noexcept{return deliveryTiming_;}
+    const auto &deliverySchedulingAfterJoin()const noexcept{return deliveryScheduling_;}
 };
 }

@@ -102,7 +102,7 @@ inline int controllerDuplexDiagnostic(const char *serviceName,bool prestop,uint3
         auto progress=std::make_shared<DuplexDiagnosticProgress>();
         WorkerDuplexConnectionOwner::Render render=[progress](HalDuplexMachSession &host,const std::atomic<bool> &cancel){
                 using Clock=std::chrono::steady_clock;
-                AudioServerPlugInIOCycleInfo cycle{};std::array<float,137*8> input;std::array<float,137*6> output;
+                AudioServerPlugInIOCycleInfo cycle{};std::array<float,137*8> input;std::array<float,137*Pro40Audio::duplexOutputChannels> output;
                 const auto inputFirst=host.descriptor.inputFirst+37;
                 progress->inputFirst.store(inputFirst);
                 uint64_t written=host.descriptor.outputFirst+host.descriptor.primedOutputFrames;
@@ -116,7 +116,7 @@ inline int controllerDuplexDiagnostic(const char *serviceName,bool prestop,uint3
                     if(!host.readInput(mach_absolute_time(),cycle,137,input))return fail(2);
                     for(unsigned f=0;f<137;++f)for(unsigned c=0;c<8;++c)
                         if(input[f*8+c]!=float(Fixture::sample(first+f,c))/8388608.f)return fail(3);
-                    for(unsigned f=0;f<137;++f)for(unsigned c=0;c<6;++c)output[f*6+c]=float(Fixture::sample(written+f,c))/8388608.f;
+                    for(unsigned f=0;f<137;++f)for(unsigned c=0;c<Pro40Audio::duplexOutputChannels;++c)output[f*Pro40Audio::duplexOutputChannels+c]=float(Fixture::sample(written+f,c))/8388608.f;
                     cycle.mOutputTime.mSampleTime=double(written+host.descriptor.outputTimeline.callbackSample);cycle.mOutputTime.mFlags=kAudioTimeStampSampleTimeValid;
                     if(!host.writeOutput(mach_absolute_time(),cycle,137,output))return fail(4);
                     written+=137;due+=2854167ns;std::this_thread::sleep_until(due);

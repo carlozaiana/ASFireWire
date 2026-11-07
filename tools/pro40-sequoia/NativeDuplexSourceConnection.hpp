@@ -19,8 +19,8 @@ template<class Receiver> class NativeDuplexSourceConnection {
     enum class State {offer,echo,initial,commit,ready,activate,running,stopping,closed};
     std::unique_ptr<DuplexMachChannel> channel_;
     Receiver &receiver_;
-    PlaybackPcmQueue<> &output_;
-    PlaybackFeedSession<> outputFeed_;
+    PlaybackPcmQueue<8192,duplexOutputChannels> &output_;
+    PlaybackFeedSession<8192,duplexOutputChannels> outputFeed_;
     const NativeDuplexDescriptor descriptor_;
     const SustainedClockPolicy policy_;
     Negotiation negotiation_;
@@ -32,11 +32,13 @@ template<class Receiver> class NativeDuplexSourceConnection {
     AudioFeedBatchFor<8> input_;
     size_t inputSize_=0;
     uint64_t sentInput_=0,sentClock_=0,lastNow_=0,credited_=0;
+    uint64_t outputBatches_=0,lastOutputHost_=0,sendFull_=0;
     std::optional<NativeDuplexClockMessage> clock_;
     bool inputPending_=false,failed_=false,stopRequested_=false,peerStop_=false,quiesced_=false,remoteClean_=false,closedOK_=false;
     bool fail() noexcept {failed_=true;stopRequested_=true;state_=State::stopping;return false;}
     bool send(Kind kind,std::span<const uint8_t> bytes,bool &accepted) noexcept {
         const auto r=channel_->send(kind,bytes);accepted=r==Result::ok;
+        if(r==Result::full)++sendFull_;
         return r==Result::ok || r==Result::full ? true : fail();
     }
     bool snapshot(NativeDuplexClockMessage &m,uint64_t now) noexcept {
@@ -73,14 +75,14 @@ template<class Receiver> class NativeDuplexSourceConnection {
         if(accepted){sentInput_+=input_.frames;inputPending_=false;}return true;
     }
 public:
-    NativeDuplexSourceConnection(std::unique_ptr<DuplexMachChannel> channel,Receiver &receiver,PlaybackPcmQueue<> &output,
+    NativeDuplexSourceConnection(std::unique_ptr<DuplexMachChannel> channel,Receiver &receiver,PlaybackPcmQueue<8192,duplexOutputChannels> &output,
                                  const NativeDuplexDescriptor &d,SustainedClockPolicy policy,uint64_t now)
         :channel_(std::move(channel)),receiver_(receiver),output_(output),
          outputFeed_({output,d.clock.identity.epoch},d.outputFirst),descriptor_(d),policy_(policy),
          negotiation_(Negotiation::Role::source,d.clock.identity,channel_?channel_->nonce():0),
          sentInput_(d.inputFirst),sentClock_(d.evidenceSequence),lastNow_(now),credited_(d.outputFirst) {
         if(!channel_ || !channel_->healthy() || channel_->epoch()!=d.clock.identity.epoch || !policy.valid() ||
-           !d.validAt(now) || d.inputChannels!=8 || d.outputChannels!=6 || d.prefixFrames-d.inputFirst>4096 ||
+           !d.validAt(now) || d.inputChannels!=duplexInputChannels || d.outputChannels!=duplexOutputChannels || d.prefixFrames-d.inputFirst>4096 ||
            (d.prefixFrames-d.inputFirst)%8 || outputFeed_.closed()){fail();return;}
         NativeDuplexClockMessage m;
         if(!snapshot(m,now) || m.sequence!=d.evidenceSequence || m.frames!=d.prefixFrames || m.observedHost!=d.evidenceHost ||
@@ -90,6 +92,8 @@ public:
         if(!lease || lease->read(d.clock.identity.epoch,d.inputFirst,std::span(initial_).first((d.prefixFrames-d.inputFirst)*8))!=WindowResult::ok ||
            !negotiation_.offer(d,now,start_))fail();
     }
+    struct Delivery {uint64_t outputBatches=0,lastOutputHost=0,sendFull=0,credited=0;};
+    Delivery deliveryAfterJoin()const noexcept{return {outputBatches_,lastOutputHost_,sendFull_,credited_};}
     bool failed() const noexcept {return failed_;}
     bool stopRequested() const noexcept {return stopRequested_;}
     bool closed() const noexcept {return state_==State::closed;}
@@ -132,6 +136,7 @@ public:
             } else if(packet.kind==Kind::output && state_==State::running) {
                 const auto r=outputFeed_.receive(packet.payload());
                 if(r!=SessionResult::ok)return fail();
+                ++outputBatches_;lastOutputHost_=now;
             } else return fail();
         }
         bool accepted=false;

@@ -164,6 +164,9 @@ struct Driver {
 #endif
     bool registeredInstance=false; // Fixed before returning the factory result.
     State state;
+#ifdef PRO40_SESSION_PROFILE
+    Pro40Audio::HalSpeakerPreferences<Properties::outputChannels> speakers;
+#endif
 #ifdef PRO40_HAL_SOURCE_LOSS
     Pro40Audio::HalSourceLossControl sourceLoss{state};
 #endif
@@ -332,6 +335,10 @@ AudioServerPlugInDriverInterface makeTable() {
 #endif
         AudioServerPlugInHostRef expected=nullptr;
         const bool first=d->host.compare_exchange_strong(expected,host);
+#ifdef PRO40_SESSION_PROFILE
+        if(first && !d->speakers.initialize(host))
+            os_log_error(OS_LOG_DEFAULT,"Pro40Lab ignored invalid stored speaker preferences; using physical output defaults");
+#endif
 #ifdef PRO40_HAL_SOURCE_LOSS
         if(first && !d->sourceLoss.start([](void *context,uint64_t action)->OSStatus {
             auto *owner=static_cast<Driver *>(context);auto *host=owner->host.load();
@@ -431,6 +438,9 @@ AudioServerPlugInDriverInterface makeTable() {
         if(!get(ref) || !Properties::valid(object))return kAudioHardwareBadObjectError;
         if(!a || !out)return kAudioHardwareIllegalOperationError;
         if(!Properties::lookup(object,*a))return kAudioHardwareUnknownPropertyError;
+#ifdef PRO40_SESSION_PROFILE
+        if(decltype(Driver::speakers)::handles(object,*a)){*out=true;return noErr;}
+#endif
         *out=false;return noErr;
     };
     t.GetPropertyDataSize=[](AudioServerPlugInDriverRef ref,AudioObjectID object,pid_t,const AudioObjectPropertyAddress *a,UInt32 n,const void *q,UInt32 *out)->OSStatus {
@@ -447,15 +457,36 @@ AudioServerPlugInDriverInterface makeTable() {
         auto *d=get(ref);if(!d)return kAudioHardwareBadObjectError;
         if(!a || !used)return kAudioHardwareIllegalOperationError;
         *used=0;Snapshot s;if(!d->state.read(s))return kAudioHardwareIllegalOperationError;
+#ifdef PRO40_SESSION_PROFILE
+        if(decltype(Driver::speakers)::handles(object,*a)) {
+            if(n)return kAudioHardwareBadPropertySizeError;
+            return d->speakers.get(a->mSelector,capacity,used,out);
+        }
+#endif
         bool alive=true;
 #ifdef PRO40_HAL_SOURCE_LOSS
         alive=d->sourceLoss.alive();
 #endif
         return propertyResult(d,object,*a,Properties::get(object,*a,n,q,s.running(),capacity,used,out,alive));
     };
-    t.SetPropertyData=[](AudioServerPlugInDriverRef ref,AudioObjectID object,pid_t,const AudioObjectPropertyAddress *a,UInt32,const void *,UInt32,const void *)->OSStatus {
-        if(!get(ref) || !Properties::valid(object))return kAudioHardwareBadObjectError;
+    t.SetPropertyData=[](AudioServerPlugInDriverRef ref,AudioObjectID object,pid_t,const AudioObjectPropertyAddress *a,UInt32 qualifierSize,const void *,UInt32 size,const void *data)->OSStatus {
+        auto *d=get(ref);if(!d || !Properties::valid(object))return kAudioHardwareBadObjectError;
         if(!a)return kAudioHardwareIllegalOperationError;
+#ifdef PRO40_SESSION_PROFILE
+        if(decltype(Driver::speakers)::handles(object,*a)) {
+            if(qualifierSize)return kAudioHardwareBadPropertySizeError;
+            auto *host=d->host.load();bool changed=false;
+            const auto status=d->speakers.set(host,a->mSelector,size,data,changed);
+            // Preferences describe existing outputs; they do not change stream
+            // structure, format, timing, or sample routing. Notify only after
+            // storage and publication, outside all preference locks/guards.
+            if(!status && changed && host->PropertiesChanged(host,object,1,a)!=noErr)
+                d->notificationFailures.fetch_add(1);
+            return status;
+        }
+#else
+        (void)qualifierSize;(void)size;(void)data;
+#endif
         return Properties::lookup(object,*a)?OSStatus(kAudioHardwareIllegalOperationError):OSStatus(kAudioHardwareUnknownPropertyError);
     };
     t.StartIO=[](AudioServerPlugInDriverRef ref,AudioObjectID object,UInt32 client)->OSStatus {return change(ref,object,client,State::Change::start);};
